@@ -2,11 +2,11 @@
 
 Track these with `resume_from`. Do not advertise them to the model until they exist.
 
-## resume_from
+## resume_from / send_subagent_message
 
-Grok lets a new child continue a finished child's transcript (`task` param `resume_from`).
-
-We do not support this. Child sessions use `--no-session`.
+Shipped as **`task_message`** (one tool):
+- running/waiting → steer via inbox file
+- idle (completed/failed) → new process with `--session` (saved chat)
 
 ## `<subagent_result>` footer (deferred)
 

@@ -27,6 +27,7 @@ export interface SpawnSpec {
   parentModel?: string;
   parentThinkingLevel?: string;
   transcriptPath: string;
+  sessionPath: string;
 }
 
 export interface ForegroundHandle {
@@ -47,13 +48,21 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 }
 
 export function buildArgs(spec: SpawnSpec): string[] {
-  const args: string[] = ["--mode", "json", "-p", "--no-session"];
+  const args: string[] = ["--mode", "json", "-p", "--session", spec.sessionPath];
   if (spec.parentModel) args.push("--model", spec.parentModel);
   if (spec.parentThinkingLevel) args.push("--thinking", spec.parentThinkingLevel);
   // No --tools: child uses the same default tool set as the root.
   // Depth gating drops task tools inside the child process itself.
-  args.push(`Task: ${spec.prompt}`);
+  args.push(spec.prompt);
   return args;
+}
+
+export function inboxPath(sessionPath: string): string {
+  return `${sessionPath}.inbox.jsonl`;
+}
+
+export function writeInbox(sessionPath: string, message: string, steer: boolean): void {
+  fs.appendFileSync(inboxPath(sessionPath), `${JSON.stringify({ message, steer, t: Date.now() })}\n`);
 }
 
 export function childEnv(spec: SpawnSpec): NodeJS.ProcessEnv {

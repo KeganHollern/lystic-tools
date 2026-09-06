@@ -43,6 +43,7 @@ export interface ChildRecord {
   stopReason?: string;
   errorMessage?: string;
   transcriptPath: string;
+  sessionPath?: string;
 }
 
 export function emptyUsage(): ChildUsage {

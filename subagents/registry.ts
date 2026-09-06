@@ -10,11 +10,12 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import type { ChildRecord, ParsedEvent } from "./types";
 import { emptyUsage } from "./types";
 import { parseLine, foldEvent, finalOutput, newAccumulator, pidAlive, killTree } from "./spawn";
+import { allocWordId } from "./ids";
 
 export type RegistryChange = (record: ChildRecord, info: { fromRunning: boolean }) => void;
 
@@ -188,7 +189,9 @@ export class SubagentRegistry {
     model?: string;
     parentId?: string;
   }): ChildRecord {
-    const id = randomUUID().slice(0, 8);
+    const taken = new Set(this.readTree().map((r) => r.id));
+    for (const id of this.children.keys()) taken.add(id);
+    const id = allocWordId(taken);
     const record: ChildRecord = {
       id,
       type: init.type,
@@ -205,6 +208,7 @@ export class SubagentRegistry {
       usage: emptyUsage(),
       output: "",
       transcriptPath: this.transcriptPathFor(id, init.prompt),
+      sessionPath: path.join(this.transcriptsDir, `${id}.session.jsonl`),
     };
     this.children.set(id, record);
     this.publish(record);

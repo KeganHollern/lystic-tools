@@ -1,31 +1,31 @@
 /**
- * /tasks overlay — one screen: list on top, log of the selected row below.
+ * /tasks overlay — tree on top, log below. Fixed height.
  *
- * Up/Down always move the selection. The log follows. PgUp/PgDn scroll the log.
- * Left/Right do nothing (they used to switch a hidden “pane” and drop the highlight).
- *
- * Every line is padded to the same visible width so the │ borders line up.
- * ANSI colors are ignored when measuring width.
+ * Tree: ↑/↓ select · Enter log · → expand · ← collapse · Esc close · q close
+ * Log:  ↑/↓ scroll · Esc tree · q close
+ * Selection is by record id so live resorted rows keep the same agent.
  */
 
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import {
+  type ExtensionAPI,
+  type ExtensionContext,
+  getMarkdownTheme,
+  type Theme,
+} from "@earendil-works/pi-coding-agent";
 import {
   Box,
+  Container,
   Key,
+  Markdown,
   matchesKey,
+  Spacer,
   Text,
   truncateToWidth,
   visibleWidth,
-  wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import type { SubagentRegistry } from "./registry";
-import { formatUsageLine, statusIcon } from "./tools";
+import { formatUsageLine, rolledCost, statusIcon } from "./tools";
 import type { ChildRecord } from "./types";
-
-interface LogLine {
-  kind: "meta" | "tool" | "text" | "blank";
-  text: string;
-}
 
 function shortenPath(p: string): string {
   const home = process.env.HOME;
@@ -73,48 +73,93 @@ function formatToolCall(name: string, args: Record<string, unknown>): string {
   }
 }
 
-function buildLog(registry: SubagentRegistry, record: ChildRecord): LogLine[] {
-  const lines: LogLine[] = [
-    { kind: "meta", text: `${record.type} · ${record.status} · depth ${record.depth} · ${formatUsageLine(record)}` },
-    { kind: "meta", text: record.prompt.replace(/\s+/g, " ").trim() },
-    { kind: "blank", text: "" },
-  ];
+function toolResultText(msg: any): { text: string; isError: boolean } {
+  const isError = Boolean(msg.isError);
+  const chunks = Array.isArray(msg.content) ? msg.content : [];
+  const text = chunks
+    .map((c: any) => (typeof c?.text === "string" ? c.text : ""))
+    .join("\n")
+    .trim();
+  return { text, isError };
+}
+
+function userBubble(theme: Theme, text: string): Markdown {
+  return new Markdown(text, 1, 0, getMarkdownTheme(), {
+    color: (c) => theme.fg("userMessageText", c),
+  });
+}
+
+function toolCard(
+  theme: Theme,
+  name: string,
+  args: Record<string, unknown>,
+  result: string | undefined,
+  isError: boolean,
+  pending: boolean,
+): Box {
+  const bg = pending ? "toolPendingBg" : isError ? "toolErrorBg" : "toolSuccessBg";
+  const box = new Box(1, 1, (c) => theme.bg(bg, c));
+  box.addChild(new Text(theme.fg("toolTitle", theme.bold(formatToolCall(name, args))), 0, 0));
+  if (result) {
+    const lines = result.split("\n");
+    const shown = lines.slice(0, 5);
+    const rest = lines.length - shown.length;
+    let body = shown.map((l) => theme.fg("toolOutput", l)).join("\n");
+    if (rest > 0) body += `\n${theme.fg("muted", `… (${rest} more lines)`)}`;
+    box.addChild(new Text(`\n${body}`, 0, 0));
+  }
+  return box;
+}
+
+function buildChat(theme: Theme, registry: SubagentRegistry, record: ChildRecord): Container {
+  const root = new Container();
+  const prompt = record.prompt.trim();
+  if (prompt) root.addChild(userBubble(theme, prompt));
 
   const messages = registry.readTranscript(record.id);
+  const live = record.status === "running" || record.status === "waiting";
+
   if (messages.length === 0) {
-    lines.push({
-      kind: "meta",
-      text: record.status === "running" ? "Waiting for the first event…" : "(empty transcript)",
-    });
-    return lines;
+    if (live) {
+      root.addChild(new Spacer(1));
+      root.addChild(new Text(theme.italic(theme.fg("muted", "Waiting…")), 1, 0));
+    } else {
+      const fallback = (record.output || record.errorMessage || "").trim();
+      if (fallback) {
+        root.addChild(new Spacer(1));
+        root.addChild(new Markdown(fallback, 1, 0, getMarkdownTheme()));
+      }
+    }
+    return root;
   }
+
+  let pending: { name: string; args: Record<string, unknown> } | undefined;
+  const flushTool = (result?: string, isError = false, done = false) => {
+    if (!pending) return;
+    root.addChild(new Spacer(1));
+    root.addChild(toolCard(theme, pending.name, pending.args, result, isError, !done && live));
+    pending = undefined;
+  };
 
   for (const msg of messages) {
     if (msg.role === "assistant") {
       for (const part of msg.content ?? []) {
-        if (part.type === "text" && part.text) {
-          for (const line of String(part.text).split("\n")) {
-            lines.push({ kind: "text", text: line });
-          }
+        if (part.type === "text" && String(part.text ?? "").trim()) {
+          flushTool();
+          root.addChild(new Spacer(1));
+          root.addChild(new Markdown(String(part.text).trim(), 1, 0, getMarkdownTheme()));
         } else if (part.type === "toolCall") {
-          lines.push({ kind: "tool", text: `→ ${formatToolCall(part.name, part.arguments ?? {})}` });
+          flushTool();
+          pending = { name: String(part.name ?? "tool"), args: (part.arguments ?? {}) as Record<string, unknown> };
         }
       }
     } else if (msg.role === "toolResult") {
-      const isError = Boolean(msg.isError);
-      const chunks = Array.isArray(msg.content) ? msg.content : [];
-      const text = chunks
-        .map((c: any) => (typeof c?.text === "string" ? c.text : ""))
-        .join(" ")
-        .replace(/\s+/g, " ")
-        .trim();
-      const preview = text.length > 120 ? `${text.slice(0, 120)}…` : text;
-      if (preview) {
-        lines.push({ kind: "tool", text: isError ? `  ✗ ${preview}` : `  ↳ ${preview}` });
-      }
+      const { text, isError } = toolResultText(msg);
+      if (pending) flushTool(text, isError, true);
     }
   }
-  return lines;
+  flushTool();
+  return root;
 }
 
 interface TreeRow {
@@ -123,6 +168,7 @@ interface TreeRow {
   hasChildren: boolean;
   expanded: boolean;
   isLast: boolean;
+  ancestorsLast: boolean[];
 }
 
 function flattenVisible(registry: SubagentRegistry, expanded: Set<string>): TreeRow[] {
@@ -135,28 +181,34 @@ function flattenVisible(registry: SubagentRegistry, expanded: Set<string>): Tree
     byParent.set(key, list);
   }
   const out: TreeRow[] = [];
-  const walk = (parentKey: string, depth: number) => {
+  const walk = (parentKey: string, depth: number, ancestorsLast: boolean[]) => {
     const nodes = sortRecords(byParent.get(parentKey) ?? []);
     nodes.forEach((n, i) => {
       const kids = byParent.get(n.id) ?? [];
+      const isLast = i === nodes.length - 1;
       out.push({
         record: n,
         depth,
         hasChildren: kids.length > 0,
         expanded: expanded.has(n.id),
-        isLast: i === nodes.length - 1,
+        isLast,
+        ancestorsLast,
       });
-      if (expanded.has(n.id) && kids.length > 0) walk(n.id, depth + 1);
+      if (expanded.has(n.id) && kids.length > 0) walk(n.id, depth + 1, [...ancestorsLast, isLast]);
     });
   };
-  walk("", 0);
+  walk("", 0, []);
   return out;
 }
 
 function treePrefix(row: TreeRow): string {
   if (row.depth === 0) return "";
-  const pad = "  ".repeat(row.depth - 1);
-  return pad + (row.isLast ? "└ " : "├ ");
+  let s = "";
+  for (let i = 0; i < row.depth - 1; i++) {
+    s += row.ancestorsLast[i] ? "  " : "│ ";
+  }
+  s += row.isLast ? "└ " : "├ ";
+  return s;
 }
 
 function sortRecords(rows: ChildRecord[]): ChildRecord[] {
@@ -184,17 +236,17 @@ function statusGlyph(theme: Theme, record: ChildRecord): string {
   }
 }
 
-function paintLogLine(theme: Theme, line: LogLine): string {
-  switch (line.kind) {
-    case "meta":
-      return theme.fg("dim", line.text);
-    case "tool":
-      return theme.fg("muted", line.text);
-    case "blank":
-      return "";
-    default:
-      return line.text;
-  }
+function statusPhrase(theme: Theme, record: ChildRecord): string {
+  const g = statusGlyph(theme, record);
+  const word =
+    record.status === "completed"
+      ? theme.fg("success", "completed")
+      : record.status === "running"
+        ? theme.fg("warning", "running")
+        : record.status === "waiting"
+          ? theme.fg("muted", "waiting")
+          : theme.fg("error", record.status);
+  return `${g} ${word}`;
 }
 
 function fit(text: string, width: number): string {
@@ -214,13 +266,19 @@ function hfill(theme: Theme, n: number): string {
 
 function fillBody(theme: Theme, body: string, selected: boolean): string {
   if (selected) return theme.bg("selectedBg", body);
-  return theme.bg("customMessageBg", body);
+  return body;
 }
 
 function row(theme: Theme, width: number, content: string, selected = false): string {
   const innerW = Math.max(0, width - 2);
   const body = fillBody(theme, fit(content, innerW), selected);
   return fit(vbar(theme) + body + vbar(theme), width);
+}
+
+function chatRow(theme: Theme, width: number, content: string): string {
+  const innerW = Math.max(0, width - 2);
+  const pad = Math.max(0, innerW - visibleWidth(content));
+  return fit(vbar(theme) + content + " ".repeat(pad) + vbar(theme), width);
 }
 
 function rule(
@@ -234,15 +292,16 @@ function rule(
   const innerW = Math.max(0, width - 2);
   const dash = Math.max(0, innerW - visibleWidth(leftLabel) - visibleWidth(rightLabel));
   const mid = fit(leftLabel + hfill(theme, dash) + rightLabel, innerW);
-  const painted = theme.bg("customMessageBg", mid);
-  return fit(theme.fg("borderAccent", chars[0]) + painted + theme.fg("borderAccent", chars[1]), width);
+  return fit(theme.fg("borderAccent", chars[0]) + mid + theme.fg("borderAccent", chars[1]), width);
 }
 
 class TasksOverlay {
   private selected = 0;
+  private selectedId?: string;
   private expanded = new Set<string>();
   private logOffset = 0;
   private logFollowEnd = true;
+  private focus: "tree" | "log" = "tree";
   private cachedWidth?: number;
   private cachedLines?: string[];
   private timer: ReturnType<typeof setInterval> | undefined;
@@ -269,13 +328,37 @@ class TasksOverlay {
     this.cachedLines = undefined;
   }
 
+  private syncSelection(rows: TreeRow[]): void {
+    if (rows.length === 0) {
+      this.selected = 0;
+      return;
+    }
+    const idx = this.selectedId ? rows.findIndex((r) => r.record.id === this.selectedId) : -1;
+    this.selected = idx >= 0 ? idx : Math.min(this.selected, rows.length - 1);
+    this.selectedId = rows[this.selected]?.record.id;
+  }
+
+  private selectIndex(rows: TreeRow[], index: number): void {
+    if (rows.length === 0) return;
+    this.selected = Math.max(0, Math.min(index, rows.length - 1));
+    this.selectedId = rows[this.selected]?.record.id;
+    this.logOffset = 0;
+    this.logFollowEnd = true;
+    this.invalidate();
+  }
+
   handleInput(data: string): void {
-    const close =
-      matchesKey(data, Key.escape) ||
-      matchesKey(data, Key.esc) ||
-      matchesKey(data, "q") ||
-      matchesKey(data, Key.ctrl("c"));
-    if (close) {
+    if (matchesKey(data, "q") || matchesKey(data, Key.ctrl("c"))) {
+      this.dispose();
+      this.onClose();
+      return;
+    }
+    if (this.focus === "log" && (matchesKey(data, Key.escape) || matchesKey(data, Key.esc))) {
+      this.focus = "tree";
+      this.invalidate();
+      return;
+    }
+    if (this.focus === "tree" && (matchesKey(data, Key.escape) || matchesKey(data, Key.esc))) {
       this.dispose();
       this.onClose();
       return;
@@ -283,20 +366,47 @@ class TasksOverlay {
 
     const rows = flattenVisible(this.registry, this.expanded);
     if (rows.length === 0) return;
-    this.selected = Math.min(this.selected, rows.length - 1);
+    this.syncSelection(rows);
 
-    if (matchesKey(data, Key.up) || matchesKey(data, "k")) {
-      this.selected = Math.max(0, this.selected - 1);
-      this.logOffset = 0;
-      this.logFollowEnd = true;
+    if (this.focus === "log") {
+      if (matchesKey(data, Key.up) || matchesKey(data, "k")) {
+        this.logOffset = Math.max(0, this.logOffset - 1);
+        this.logFollowEnd = false;
+        this.invalidate();
+        return;
+      }
+      if (matchesKey(data, Key.down) || matchesKey(data, "j")) {
+        this.logOffset += 1;
+        this.logFollowEnd = false;
+        this.invalidate();
+        return;
+      }
+      if (matchesKey(data, "g") || matchesKey(data, Key.home)) {
+        this.logOffset = 0;
+        this.logFollowEnd = false;
+        this.invalidate();
+        return;
+      }
+      if (matchesKey(data, "G") || matchesKey(data, Key.end)) {
+        this.logOffset = 99999;
+        this.logFollowEnd = true;
+        this.invalidate();
+      }
+      return;
+    }
+
+    if (matchesKey(data, Key.enter)) {
+      this.focus = "log";
       this.invalidate();
       return;
     }
+
+    if (matchesKey(data, Key.up) || matchesKey(data, "k")) {
+      this.selectIndex(rows, Math.max(0, this.selected - 1));
+      return;
+    }
     if (matchesKey(data, Key.down) || matchesKey(data, "j")) {
-      this.selected = Math.min(rows.length - 1, this.selected + 1);
-      this.logOffset = 0;
-      this.logFollowEnd = true;
-      this.invalidate();
+      this.selectIndex(rows, Math.min(rows.length - 1, this.selected + 1));
       return;
     }
 
@@ -304,7 +414,6 @@ class TasksOverlay {
       const row = rows[this.selected];
       if (row?.hasChildren) {
         this.expanded.add(row.record.id);
-        this.selected = Math.min(rows.length, this.selected + 1);
         this.logOffset = 0;
         this.logFollowEnd = true;
         this.invalidate();
@@ -314,17 +423,15 @@ class TasksOverlay {
     if (matchesKey(data, Key.left) || matchesKey(data, "h")) {
       const row = rows[this.selected];
       if (!row) return;
-      if (row.depth > 0 && row.record.parentId) {
-        this.expanded.delete(row.record.parentId);
-        const next = flattenVisible(this.registry, this.expanded);
-        const idx = next.findIndex((r) => r.record.id === row.record.parentId);
-        this.selected = idx >= 0 ? idx : 0;
-        this.logOffset = 0;
-        this.logFollowEnd = true;
-        this.invalidate();
-      } else if (row.expanded) {
+      if (row.expanded) {
         this.expanded.delete(row.record.id);
         this.invalidate();
+        return;
+      }
+      if (row.record.parentId) {
+        this.expanded.delete(row.record.parentId);
+        const next = flattenVisible(this.registry, this.expanded);
+        this.selectIndex(next, next.findIndex((r) => r.record.id === row.record.parentId));
       }
       return;
     }
@@ -335,36 +442,11 @@ class TasksOverlay {
         this.registry.remove(target.id);
         this.expanded.delete(target.id);
         const next = flattenVisible(this.registry, this.expanded);
-        this.selected = Math.min(this.selected, Math.max(0, next.length - 1));
-        this.logFollowEnd = true;
-        this.invalidate();
+        this.selectIndex(next, Math.min(this.selected, Math.max(0, next.length - 1)));
       }
       return;
     }
 
-    const page = 8;
-    if (matchesKey(data, Key.pageUp)) {
-      this.logOffset = Math.max(0, this.logOffset - page);
-      this.logFollowEnd = false;
-      this.invalidate();
-      return;
-    }
-    if (matchesKey(data, Key.pageDown)) {
-      this.logOffset += page;
-      this.invalidate();
-      return;
-    }
-    if (matchesKey(data, "g") || matchesKey(data, Key.home)) {
-      this.logOffset = 0;
-      this.logFollowEnd = false;
-      this.invalidate();
-      return;
-    }
-    if (matchesKey(data, "G") || matchesKey(data, Key.end)) {
-      this.logOffset = 99999;
-      this.logFollowEnd = true;
-      this.invalidate();
-    }
   }
 
   render(width: number): string[] {
@@ -374,6 +456,7 @@ class TasksOverlay {
     const w = Math.max(40, width);
     const tree = this.registry.readTree();
     const rows = flattenVisible(this.registry, this.expanded);
+    this.syncSelection(rows);
     const running = tree.filter((r) => r.status === "running").length;
     const waiting = tree.filter((r) => r.status === "waiting").length;
     const idle = tree.length - running - waiting;
@@ -390,9 +473,11 @@ class TasksOverlay {
       ),
     );
 
-    const listHeight = Math.min(6, Math.max(1, rows.length || 1));
+    const listHeight = 6;
     if (rows.length === 0) {
       out.push(row(th, w, th.fg("dim", "  No subagents in this session.")));
+      for (let i = 1; i < listHeight; i++) out.push(row(th, w, ""));
+      out.push(row(th, w, " "));
     } else {
       this.selected = Math.min(this.selected, rows.length - 1);
       const start = Math.max(0, Math.min(this.selected - listHeight + 1, rows.length - listHeight));
@@ -407,61 +492,65 @@ class TasksOverlay {
         }
         const r = item.record;
         const abs = start + i;
+        const innerW = Math.max(1, w - 2);
         const twist = item.hasChildren
           ? (item.expanded ? th.fg("muted", "▾ ") : th.fg("muted", "▸ "))
           : "  ";
-        const live =
+        const lead = `${th.fg("borderAccent", treePrefix(item))}${twist}${statusGlyph(th, r)}  `;
+        const cost = rolledCost(r, tree);
+        const costStr = cost > 0 ? th.fg("warning", `$${cost.toFixed(4)}`) : "";
+        const durRaw =
           r.status === "running" || r.status === "waiting"
             ? `${Math.round((Date.now() - r.startedAt) / 1000)}s`
-            : formatUsageLine(r);
-        const line =
-          `${treePrefix(item)}${twist}${statusGlyph(th, r)}  ${r.description}    ` +
-          `${th.fg("dim", r.id)}  ${th.fg("dim", live)}`;
+            : r.endedAt
+              ? `${Math.round((r.endedAt - r.startedAt) / 1000)}s`
+              : "";
+        const dur = durRaw ? th.fg("dim", durRaw) : "";
+        const id = th.fg("muted", r.id);
+        const right = [id, costStr, dur].filter(Boolean).join("  ");
+        const rightW = visibleWidth(right);
+        const descBudget = Math.max(6, innerW - visibleWidth(lead) - rightW - 2);
+        const desc = truncateToWidth(r.description, descBudget);
+        const left = lead + desc;
+        const gap = Math.max(1, innerW - visibleWidth(left) - rightW);
+        const line = left + " ".repeat(gap) + right;
         out.push(row(th, w, line, abs === this.selected));
       }
-      if (above > 0 || below > 0) {
-        const hint =
-          (above > 0 ? `↑ ${above} more  ` : "") +
-          (below > 0 ? `↓ ${below} more` : "");
-        out.push(row(th, w, th.fg("dim", `  ${hint.trim()}`)));
-      }
+      const listHint =
+        above > 0 || below > 0
+          ? `${above > 0 ? `↑ ${above} more  ` : ""}${below > 0 ? `↓ ${below} more` : ""}`
+          : "";
+      out.push(row(th, w, th.fg("dim", listHint ? `  ${listHint.trim()}` : " ")));
     }
 
     const record = rows[this.selected]?.record;
-    const liveTag = record?.status === "running" ? th.fg("warning", " live ") : "";
-    const logLeft = record
-      ? th.fg("accent", ` ${record.id} `) + th.fg("dim", `${record.status} `) + liveTag
-      : th.fg("dim", " log ");
-    out.push(rule(th, w, "mid", logLeft, ""));
-
     const innerW = Math.max(1, w - 2);
-    const wrapW = Math.max(1, innerW - 2);
     const logHeight = 12;
-    const source = record ? buildLog(this.registry, record) : [];
-    const wrapped: string[] = [];
-    for (const line of source) {
-      const painted = paintLogLine(th, line);
-      const parts = wrapTextWithAnsi(painted.length === 0 ? " " : painted, wrapW);
-      for (const part of parts) wrapped.push(part);
-    }
+    const wrapped = record ? buildChat(th, this.registry, record).render(innerW) : [];
     const maxOff = Math.max(0, wrapped.length - logHeight);
-    if (this.logFollowEnd || (record && record.status === "running" && this.logFollowEnd)) {
-      this.logOffset = maxOff;
-    }
+    if (this.logFollowEnd) this.logOffset = maxOff;
     this.logOffset = Math.min(this.logOffset, maxOff);
     if (this.logOffset >= maxOff) this.logFollowEnd = true;
+    const shownEnd = Math.min(wrapped.length, this.logOffset + logHeight);
+    const pos =
+      wrapped.length === 0
+        ? "0/0"
+        : `${this.logOffset + 1}–${shownEnd}/${wrapped.length}`;
+    const statusBit = record ? ` ${statusPhrase(th, record)} ` : "";
+    const logLeft = record
+      ? th.fg("accent", ` ${record.id} `) + statusBit
+      : th.fg("dim", " log ");
+    const logRight = th.fg("dim", ` ${pos}${this.focus === "log" ? "  ●" : ""} `);
+    out.push(rule(th, w, "mid", logLeft, logRight));
     for (let i = 0; i < logHeight; i++) {
-      const text = wrapped[this.logOffset + i] ?? "";
-      out.push(row(th, w, ` ${text}`));
-    }
-    if (wrapped.length > logHeight) {
-      const up = this.logOffset > 0 ? `↑ ${this.logOffset} ` : "";
-      const down =
-        this.logOffset < maxOff ? `↓ ${wrapped.length - this.logOffset - logHeight} more` : "end";
-      out.push(row(th, w, th.fg("dim", `  ${up}${down}`)));
+      out.push(chatRow(th, w, wrapped[this.logOffset + i] ?? ""));
     }
 
-    out.push(rule(th, w, "bot", th.fg("dim", " ↑/↓ select · → expand · ← collapse · PgUp/PgDn log · x delete · q close "), ""));
+    const help =
+      this.focus === "log"
+        ? " ↑/↓ scroll log · Esc tree · q close "
+        : " ↑/↓ tree · Enter log · → expand · ← collapse · Esc close · q close ";
+    out.push(rule(th, w, "bot", th.fg("dim", help), ""));
 
     this.cachedLines = out;
     this.cachedWidth = width;
@@ -480,7 +569,7 @@ export function registerTasksCommand(pi: ExtensionAPI, registry: SubagentRegistr
           return;
         }
         const text = rows
-          .map((r) => `${statusIcon(r)} ${r.id}  ${r.type}  ${r.status}  ${r.description}  ${formatUsageLine(r)}`)
+          .map((r) => `${statusIcon(r)} ${r.id}  ${r.status}  ${r.description}  ${formatUsageLine(r, registry.readTree())}`)
           .join("\n");
         ctx.ui.notify(text, "info");
         return;
@@ -496,14 +585,16 @@ export function registerTasksCommand(pi: ExtensionAPI, registry: SubagentRegistr
       status?: string;
       description?: string;
       durationMs?: number;
+      cost?: number;
     };
     const icon = d.status === "failed" || d.status === "killed" ? "✗" : "✓";
     const color = d.status === "completed" ? "success" : "error";
     const secs = d.durationMs ? `${Math.round(d.durationMs / 1000)}s` : "";
     const box = new Box(1, 0);
+    const cost = typeof d.cost === "number" && d.cost > 0 ? theme.fg("warning", `$${d.cost.toFixed(4)}`) : "";
     box.addChild(
       new Text(
-        `${theme.fg(color as any, icon)} ${theme.fg("accent", d.subagentId ?? "?")}  ${d.type ?? ""}  ${d.description ?? ""}  ${theme.fg("dim", secs)}`,
+        `${theme.fg(color as any, icon)} ${theme.fg("muted", d.subagentId ?? "?")}  ${d.description ?? ""}  ${cost}  ${theme.fg("dim", secs)}`.replace(/  +/g, "  "),
         0,
         0,
       ),

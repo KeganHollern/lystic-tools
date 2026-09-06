@@ -1,7 +1,7 @@
 /**
  * Subagent system for lystic-tools.
  *
- * Registers task / task_output / kill_task (when depth < maxDepth) and the
+ * Registers task / task_output / task_kill / task_message (when depth < maxDepth) and the
  * /tasks overlay. Wires persistence, status line, and auto-wake.
  */
 
@@ -12,10 +12,12 @@ import {
   SUBAGENT_DEPTH,
 } from "../config";
 import { SubagentRegistry, transcriptsDirFor } from "./registry";
-import { registerTaskTools } from "./tools";
+import { registerTaskTools, rolledCost } from "./tools";
 import { registerTasksCommand } from "./ui";
 import { formatSubagentWake } from "./format";
+import { inboxPath } from "./spawn";
 import type { ChildRecord } from "./types";
+import * as fs from "node:fs";
 
 export function registerSubagents(pi: ExtensionAPI): void {
   if (!SUBAGENTS_ENABLED) return;
@@ -23,6 +25,7 @@ export function registerSubagents(pi: ExtensionAPI): void {
   let registry: SubagentRegistry | null = null;
   let ui: ExtensionContext["ui"] | undefined;
   let footerTimer: ReturnType<typeof setInterval> | undefined;
+  let inboxTimer: ReturnType<typeof setInterval> | undefined;
   const woken = new Set<string>();
 
   const ensureRegistry = (sessionFile: string | undefined): SubagentRegistry => {
@@ -34,7 +37,7 @@ export function registerSubagents(pi: ExtensionAPI): void {
     registry.setOnChange((record, info) => {
       updateStatus(ui, registry!);
       if (info.fromRunning) {
-        maybeWake(pi, record, woken);
+        maybeWake(pi, record, woken, registry!);
         registry!.markSelfRunningIfIdle();
       }
     });
@@ -54,12 +57,47 @@ export function registerSubagents(pi: ExtensionAPI): void {
         if (registry) updateStatus(ui, registry);
       }, 400);
     }
+    const selfId = process.env.LYSTIC_SUBAGENT_ID;
+    const sessionFile = ctx.sessionManager.getSessionFile();
+    if (selfId && sessionFile) {
+      if (inboxTimer) clearInterval(inboxTimer);
+      let offset = 0;
+      const file = inboxPath(sessionFile);
+      inboxTimer = setInterval(() => {
+        try {
+          const size = fs.statSync(file).size;
+          if (size <= offset) return;
+          const fd = fs.openSync(file, "r");
+          const buf = Buffer.alloc(size - offset);
+          fs.readSync(fd, buf, 0, buf.length, offset);
+          fs.closeSync(fd);
+          offset = size;
+          for (const line of buf.toString("utf8").split("\n")) {
+            if (!line.trim()) continue;
+            try {
+              const msg = JSON.parse(line) as { message?: string; steer?: boolean };
+              if (msg.message) {
+                pi.sendUserMessage(msg.message, {
+                  deliverAs: msg.steer ? "steer" : "followUp",
+                });
+              }
+            } catch { /* skip */ }
+          }
+        } catch {
+          /* inbox not written yet */
+        }
+      }, 300);
+    }
   });
 
   pi.on("session_shutdown", () => {
     if (footerTimer) {
       clearInterval(footerTimer);
       footerTimer = undefined;
+    }
+    if (inboxTimer) {
+      clearInterval(inboxTimer);
+      inboxTimer = undefined;
     }
     if (!registry) return;
     for (const child of registry.list()) {
@@ -97,7 +135,7 @@ function updateStatus(ui: ExtensionContext["ui"] | undefined, registry: Subagent
   ui.setStatus("subagents", text || undefined);
 }
 
-function maybeWake(pi: ExtensionAPI, record: ChildRecord, woken: Set<string>): void {
+function maybeWake(pi: ExtensionAPI, record: ChildRecord, woken: Set<string>, registry: SubagentRegistry): void {
   if (!record.background) return;
   if (record.status === "running") return;
   if (woken.has(record.id)) return;
@@ -105,8 +143,6 @@ function maybeWake(pi: ExtensionAPI, record: ChildRecord, woken: Set<string>): v
 
   if (!SUBAGENTS_AUTO_WAKE) return;
 
-  // Grok-build: wake the parent and put the child's answer in context.
-  // followUp waits if a turn is in progress, then starts the next turn.
   pi.sendMessage(
     {
       customType: "subagent_completed",
@@ -118,6 +154,7 @@ function maybeWake(pi: ExtensionAPI, record: ChildRecord, woken: Set<string>): v
         status: record.status,
         description: record.description,
         durationMs: record.endedAt ? record.endedAt - record.startedAt : undefined,
+        cost: rolledCost(record, registry.readTree()),
       },
     },
     { triggerTurn: true, deliverAs: "steer" },
