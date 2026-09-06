@@ -1,0 +1,16 @@
+# Copy to ~/.pi/agent/lystic-tools.yaml
+# Precedence: this file > environment variable > built-in default.
+
+webSearch:
+  model: grok-4.6
+  xSearch: true
+
+webFetch:
+  extraAllowedDomains: []
+
+subagents:
+  enabled: true
+  maxDepth: 2
+  maxParallel: 4
+  outputCap: 20000
+  autoWake: true
