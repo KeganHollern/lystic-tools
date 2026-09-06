@@ -19,9 +19,9 @@ import {
   FETCH_EXTRA_DOMAINS,
   FETCH_MAX_MARKDOWN_CHARS,
   config,
-} from "./config";
-import { fetchWithChecks } from "./http";
-import { htmlToMarkdown } from "./markdown";
+} from "../config";
+import { fetchWithChecks } from "../http";
+import { htmlToMarkdown } from "../markdown";
 
 // ─── Domain allowlist (copied from grok-build web_fetch/config.rs) ──────────
 
@@ -217,7 +217,7 @@ async function fetchOne(urlInput: string, ctx: any, signal: AbortSignal | undefi
   let raw = urlInput.trim();
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) raw = `https://${raw}`;
 
-  const { assertPublicHttpUrl } = await import("./http");
+  const { assertPublicHttpUrl } = await import("../http");
   const url = await assertPublicHttpUrl(raw);
   if (!domainAllowed(url)) {
     throw new Error(

@@ -10,9 +10,9 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { SEARCH_BASE_URL, SEARCH_MODEL, SEARCH_X_SEARCH } from "./config";
-import { resolveCredentials, tripBreaker, resetBreaker, allBreakersOpen } from "./auth";
-import { abortableSleep } from "./http";
+import { SEARCH_BASE_URL, SEARCH_MODEL, SEARCH_X_SEARCH } from "../config";
+import { resolveCredentials, tripBreaker, resetBreaker, allBreakersOpen } from "../auth";
+import { abortableSleep } from "../http";
 
 const MAX_ATTEMPTS_PER_CREDENTIAL = 3;
 

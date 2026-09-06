@@ -10,7 +10,7 @@
     "url": "git+https://github.com/KeganHollern/lystic-tools.git"
   },
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": ["./src/index.ts"]
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",

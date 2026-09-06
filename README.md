@@ -1,66 +1,45 @@
 # lystic-tools
 
-Web search, page fetch, and subagents for [pi](https://github.com/badlogic/pi-mono).
+This package adds web search, page fetch, and subagents to [pi](https://github.com/badlogic/pi-mono).
 
 ## Install
+
+Use this command to install from GitHub:
 
 ```bash
 pi install git:github.com/KeganHollern/lystic-tools
 ```
 
-Or from this clone:
+Use this command to install from a local clone:
 
 ```bash
 pi install /absolute/path/to/lystic-tools
 ```
 
-Config (optional) lives at `~/.pi/agent/lystic-tools.yaml`. Copy `lystic-tools.yaml.example` to that path and edit.
+The configuration file is `~/.pi/agent/lystic-tools.yaml`.
+Copy `lystic-tools.yaml.example` to that path.
+Then edit the file.
 
 ## Tools
 
-| Tool | Role |
-|---|---|
-| `web_search` | xAI Responses API search (subscription OAuth, API key fallback). Includes server-side `x_search`. |
-| `web_fetch` | Local GET of allowed documentation URLs as markdown. |
-| `task` | Spawn a subagent: same model, thinking, and tools as the parent. |
-| `task_list` | List immediate child subagents (id, description, status). |
-| `task_output` | Wait for or read subagent results. |
-| `task_kill` | Kill a subagent and its process group. |
-| `task_message` | Steer a live subagent, or resume an idle one. |
+You can use these tools:
 
-## `/tasks`
+- `web_search` searches the web.
+- `web_fetch` gets allowed documentation URLs as markdown.
+- `task` starts a subagent.
+- `task_list` lists the immediate child subagents.
+- `task_output` waits for or reads subagent results.
+- `task_kill` stops a subagent.
+- `task_message` sends a message to a live subagent or resumes an idle subagent.
 
-`/tasks` opens a panel over the chat. The top is a tree of this session’s subagents. The bottom is the selected child’s chat (prompt, tools, assistant text).
-
-Ids look like `brave-apple`. Cost is the child plus its descendants. Nested children show after you expand a parent.
-
-**Tree**
-
-| Key | Action |
-|---|---|
-| ↑ / ↓ | Move the selection |
-| → | Expand children |
-| ← | Collapse this row, then the parent |
-| Enter | Focus the chat log |
-| x | Remove the row from the tree |
-| Esc / q | Close |
-
-**Log** (after Enter)
-
-| Key | Action |
-|---|---|
-| ↑ / ↓ | Scroll the chat |
-| Esc | Back to the tree |
-| q | Close |
-
-The panel height stays fixed. The mid rule shows id, status, and `1–12/40` for scroll position.
+The `/tasks` command shows the subagents.
 
 ## Subagents
 
-A child is a separate `pi` process with its own context window. At `maxDepth` (default 2), `task` tools are not registered.
-
-Completions wake the parent as a steered `<system-reminder>` (not a user message).
+A subagent is a separate `pi` process.
+The default `maxDepth` is 2.
+When a subagent completes, it wakes the parent as a `<system-reminder>`.
 
 ## License
 
-MIT
+This package uses the MIT license.
