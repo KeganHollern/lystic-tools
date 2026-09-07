@@ -14,3 +14,9 @@ subagents:
   maxParallel: 4
   outputCap: 20000
   autoWake: true
+
+goal:
+  enabled: true
+  skeptics: 2          # skeptics per verification panel
+  ideaGuyAfter: 3      # failed verifications between idea-guy runs
+  blockedPauseAfter: 12 # blocked reports before pause; idea guy fires every 3

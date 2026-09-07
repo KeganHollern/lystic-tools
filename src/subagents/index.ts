@@ -7,6 +7,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
+  GOAL_ENABLED,
   SUBAGENTS_AUTO_WAKE,
   SUBAGENTS_ENABLED,
   SUBAGENT_DEPTH,
@@ -17,6 +18,9 @@ import { registerTasksCommand } from "./ui";
 import { formatSubagentWake } from "./format";
 import { inboxPath } from "./spawn";
 import type { ChildRecord } from "./types";
+import { createGoalControl, goalNotify, registerGoalFeature } from "../goal/loop";
+import { registerGoalCommand } from "../goal/command";
+import { isGoalRoleType } from "../goal/state";
 import * as fs from "node:fs";
 
 export function registerSubagents(pi: ExtensionAPI): void {
@@ -26,7 +30,6 @@ export function registerSubagents(pi: ExtensionAPI): void {
   let ui: ExtensionContext["ui"] | undefined;
   let footerTimer: ReturnType<typeof setInterval> | undefined;
   let inboxTimer: ReturnType<typeof setInterval> | undefined;
-  const woken = new Set<string>();
 
   const ensureRegistry = (sessionFile: string | undefined): SubagentRegistry => {
     if (registry) return registry;
@@ -36,8 +39,9 @@ export function registerSubagents(pi: ExtensionAPI): void {
     });
     registry.setOnChange((record, info) => {
       updateStatus(ui, registry!);
+      goalNotify(record, info);
       if (info.fromRunning) {
-        maybeWake(pi, record, woken, registry!);
+        maybeWake(pi, record, registry!);
         registry!.markSelfRunningIfIdle();
       }
     });
@@ -113,6 +117,12 @@ export function registerSubagents(pi: ExtensionAPI): void {
   const boot = ensureRegistry(undefined);
   registerTaskTools({ registry: boot, pi });
   if (SUBAGENT_DEPTH === 0) registerTasksCommand(pi, boot);
+
+  // /goal: the goal loop. Root sessions only — child processes never get it.
+  if (GOAL_ENABLED && SUBAGENT_DEPTH === 0) {
+    registerGoalFeature(pi, { registry: boot });
+    registerGoalCommand(pi, createGoalControl());
+  }
 }
 
 let lastFooter = "";
@@ -135,11 +145,13 @@ function updateStatus(ui: ExtensionContext["ui"] | undefined, registry: Subagent
   ui.setStatus("subagents", text || undefined);
 }
 
-function maybeWake(pi: ExtensionAPI, record: ChildRecord, woken: Set<string>, registry: SubagentRegistry): void {
+function maybeWake(pi: ExtensionAPI, record: ChildRecord, registry: SubagentRegistry): void {
   if (!record.background) return;
+  // Goal roles never wake the worker; the goal loop owns all timing.
+  if (isGoalRoleType(record.type)) return;
   if (record.status === "running") return;
-  if (woken.has(record.id)) return;
-  woken.add(record.id);
+  if (registry.isWoken(record.id)) return;
+  registry.markWoken(record.id);
 
   if (!SUBAGENTS_AUTO_WAKE) return;
 

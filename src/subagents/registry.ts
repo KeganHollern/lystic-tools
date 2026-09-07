@@ -222,6 +222,16 @@ export class SubagentRegistry {
     return path.join(this.transcriptsDir, `${id}-${hash}.jsonl`);
   }
 
+  private wokenIds = new Set<string>();
+
+  isWoken(id: string): boolean {
+    return this.wokenIds.has(id);
+  }
+
+  markWoken(id: string): void {
+    this.wokenIds.add(id);
+  }
+
   update(id: string, patch: Partial<ChildRecord>, opts?: { silent?: boolean }): ChildRecord | undefined {
     const record = this.children.get(id);
     if (!record) return undefined;
@@ -230,6 +240,9 @@ export class SubagentRegistry {
       typeof patch.status === "string" &&
       patch.status !== "running";
     Object.assign(record, patch);
+    // Re-arm the completion wake: a record that runs again (e.g. a
+    // task_message resume) must steer the parent on its next completion.
+    if (patch.status === "running") this.wokenIds.delete(id);
     this.publish(record);
     this.snapshot();
     if (!opts?.silent) this.onChange?.(record, { fromRunning });

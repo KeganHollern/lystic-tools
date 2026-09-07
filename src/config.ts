@@ -43,10 +43,21 @@ export interface SubagentsConfig {
   autoWake?: boolean;
 }
 
+export interface GoalConfig {
+  enabled?: boolean;
+  /** Skeptics per verification panel. Default 2. */
+  skeptics?: number;
+  /** Failed verifications between idea-guy runs. Default 3. */
+  ideaGuyAfter?: number;
+  /** Consecutive blocked_reason calls before the goal pauses. Default 3. */
+  blockedPauseAfter?: number;
+}
+
 export interface LysticToolsConfig {
   webSearch?: WebSearchConfig;
   webFetch?: WebFetchConfig;
   subagents?: SubagentsConfig;
+  goal?: GoalConfig;
 }
 
 function agentDir(): string {
@@ -107,3 +118,11 @@ export const SUBAGENTS_AGENT_SCOPE = config.subagents?.agentScope ?? "user";
 export const SUBAGENTS_AUTO_WAKE = config.subagents?.autoWake ?? true;
 /** Depth of THIS pi process: 0 = root session, 1+ = subagent. */
 export const SUBAGENT_DEPTH = Number.parseInt(process.env.LYSTIC_SUBAGENT_DEPTH ?? "0", 10) || 0;
+
+export const GOAL_ENABLED = config.goal?.enabled ?? true;
+export const GOAL_SKEPTICS = Math.max(1, config.goal?.skeptics ?? 2);
+export const GOAL_IDEA_AFTER = Math.max(1, config.goal?.ideaGuyAfter ?? 3);
+/** Blocked reports before the goal pauses; the idea guy fires after every 3. */
+export const GOAL_BLOCKED_PAUSE = Math.max(3, config.goal?.blockedPauseAfter ?? 12);
+/** Cadence of blocked reports that summons the idea guy. */
+export const GOAL_BLOCKED_IDEA_EVERY = 3;
