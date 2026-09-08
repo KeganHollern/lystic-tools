@@ -50,8 +50,8 @@ function contractBlock(): string {
   ].join("\n");
 }
 
-export function kickoffPrompt(goal: GoalState, dir: string, queuedInput?: string): string {
-  const lines = [
+export function kickoffPrompt(goal: GoalState, dir: string): string {
+  return [
     "<system-reminder>",
     `GOAL ACTIVE (round 1 of ${goal.id}). You are the worker for this goal.`,
     "",
@@ -71,17 +71,8 @@ export function kickoffPrompt(goal: GoalState, dir: string, queuedInput?: string
     "yourself and confirm the expected observations hold. Honest proof or the panel will refute you.",
     "",
     contractBlock(),
-  ];
-  if (queuedInput) {
-    lines.push(
-      "",
-      "## User message (queued while the planner ran — treat it as part of this round)",
-      "",
-      queuedInput,
-    );
-  }
-  lines.push("</system-reminder>");
-  return lines.join("\n");
+    "</system-reminder>",
+  ].join("\n");
 }
 
 export function roundPrompt(goal: GoalState, dir: string): string {

@@ -39,8 +39,8 @@ The `/tasks` command shows the subagents.
 
 `/goal <objective>` starts an autonomous goal.
 A planner subagent writes a plan file first.
-While the planner runs, your messages are held back.
-They steer into the first worker round, so the worker sees them in context.
+While the planner or the idea guy runs, your messages are held back.
+They ride the next worker round, so the worker sees them in context.
 Then this session works in rounds.
 When the session and all subagents go idle, the harness injects the next round.
 

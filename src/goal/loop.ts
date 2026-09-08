@@ -81,6 +81,19 @@ function flushQueuedInput(reason: string): void {
 ${text}`, "warning");
 }
 
+function takeQueued(): string[] {
+  if (queuedUserInput.length === 0) return [];
+  const items = [...queuedUserInput];
+  queuedUserInput.length = 0;
+  return items;
+}
+
+/** True while a goal-role idea agent is actually running. */
+function ideaGuyRunning(goal: GoalState | undefined): boolean {
+  if (!goal?.ideasPending || !goal.ideaId) return false;
+  return isBusy(findRecord(goal.ideaId));
+}
+
 /** Wired into the registry onChange in index.ts; no-op until registered. */
 export function goalNotify(record: ChildRecord, info: { fromRunning: boolean }): void {
   notifyChange?.(record, info);
@@ -141,11 +154,9 @@ function notice(text: string, kind: "info" | "warning" | "error" = "info"): void
   );
 }
 
-function injectRound(goal: GoalState, kickoff: boolean, queuedInput?: string): void {
+function injectRound(goal: GoalState, kickoff: boolean): void {
   const dir = goalDirFor(goal.id);
-  const prompt = kickoff
-    ? kickoffPrompt(goal, dir, queuedInput)
-    : roundPrompt(goal, dir);
+  const prompt = kickoff ? kickoffPrompt(goal, dir) : roundPrompt(goal, dir);
   // Ideas ride exactly one reminder; do not re-send stale text in later rounds.
   if (goal.ideasText) {
     goal.ideasText = undefined;
@@ -259,9 +270,9 @@ function settleInner(fromSettled: boolean): void {
     save(goal);
     activateGoalTool(thePi!);
     notice(`Plan ready. Worker starts (goal ${goal.id}).`);
-    const queued = queuedUserInput.join("\n\n---\n\n");
-    queuedUserInput.length = 0;
-    injectRound(goal, true, queued || undefined);
+    const queued = takeQueued();
+    void queued; // delivered natively on agent_start below
+    injectRound(goal, true);
     return;
   }
 
@@ -472,6 +483,8 @@ export function createGoalControl(): GoalControl {
       goal.pauseReason = undefined;
       goal.pauseDetail = undefined;
       goal.userSpokeSincePause = false;
+      // A user resume IS intervention: the blocked streak starts fresh.
+      goal.consecutiveBlocked = 0;
       save(goal);
       resetRunSignals();
       setTimeout(() => settle(), 50);
@@ -572,11 +585,17 @@ export function registerGoalFeature(pi: ExtensionAPI, deps: GoalFeatureDeps): vo
     const e = event as any;
     if (e?.source && e.source !== "extension") {
       const goal = load();
-      // While the planner runs, hold user messages back; they steer into
-      // the kickoff round so the worker sees them in context.
-      if (goal && goal.status === "planning" && !(e.images && e.images.length)) {
+      // While the planner or the idea guy runs, hold user messages back;
+      // they ride the next worker round so the worker sees them in context.
+      const images = Boolean(e.images && e.images.length);
+      if (goal && (goal.status === "planning" || ideaGuyRunning(goal)) && !images) {
         queuedUserInput.push(String(e.text ?? ""));
-        ctx.ui.notify("Queued for the goal worker — it steers in at kickoff.", "info");
+        ctx.ui.notify(
+          goal.status === "planning"
+            ? "Queued for the goal worker — it steers in at kickoff."
+            : "Queued for the goal worker — it rides the next round.",
+          "info",
+        );
         return { action: "handled" };
       }
       userTurn = true;
@@ -584,6 +603,15 @@ export function registerGoalFeature(pi: ExtensionAPI, deps: GoalFeatureDeps): vo
         goal.userSpokeSincePause = true;
         save(goal);
       }
+    }
+  });
+
+  pi.on("agent_start", () => {
+    // The next run after a goal-role wait is the injected round; deliver
+    // held user messages as native steered user messages, exactly like
+    // pi's own queue.
+    for (const text of takeQueued()) {
+      pi.sendUserMessage(text, { deliverAs: "steer" });
     }
   });
 
