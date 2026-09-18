@@ -63,35 +63,45 @@ const DEFAULT_ALLOWED_DOMAINS: string[] = [
   // Other tools
   "git-scm.com", "nginx.org", "httpd.apache.org",
   // ── Community additions beyond grok-build's default list ──
-  // Code hosting and raw content
-  "github.com", "raw.githubusercontent.com", "gist.github.com", "docs.github.com", "docs.gitlab.com",
+  // Code hosting, raw content, and repository APIs
+  "github.com", "raw.githubusercontent.com", "api.github.com", "objects.githubusercontent.com",
+  "gist.github.com", "docs.github.com", "gitlab.com", "raw.gitlab.com", "docs.gitlab.com",
+  "bitbucket.org", "grep.app", "sourcegraph.com",
+  // Docs platforms on shared hosting: "*.host" entries allow any subdomain of host.
+  "*.github.io", "*.readthedocs.io", "*.readthedocs.org", "*.gitbook.io", "*.pythonhosted.org",
   // Q&A
-  "stackoverflow.com", "serverfault.com", "superuser.com",
+  "stackoverflow.com", "serverfault.com", "superuser.com", "*.stackexchange.com",
   // Package registries
   "npmjs.com", "registry.npmjs.org", "pypi.org", "crates.io", "rubygems.org", "packagist.org", "lib.rs",
+  "search.maven.org", "central.sonatype.com", "pub.dev", "hex.pm", "metacpan.org",
   // Web platform and browsers
   "developer.chrome.com", "web.dev", "developers.google.com", "deno.land",
   // JS tooling
   "svelte.dev", "vite.dev", "eslint.org", "prettier.io", "pnpm.io", "yarnpkg.com", "astro.build", "preactjs.com", "solidjs.com",
+  "angular.dev", "remix.run", "nuxt.com", "vitest.dev", "playwright.dev", "testing-library.com",
+  "storybook.js.org", "tanstack.com", "trpc.io", "deno.com",
   // More languages
   "docs.scala-lang.org", "elixir-lang.org", "hexdocs.pm", "www.erlang.org", "clojure.org", "clojuredocs.org",
   "perldoc.perl.org", "dart.dev", "ziglang.org", "nim-lang.org", "www.lua.org", "ocaml.org",
   "www.haskell.org", "hackage.haskell.org",
   // Cloud, infra, observability
   "docs.docker.com", "developer.hashicorp.com", "prometheus.io/docs", "grafana.com/docs", "jenkins.io/doc",
+  "opentelemetry.io", "grpc.io", "protobuf.dev",
   // More databases
-  "www.mongodb.com/docs", "clickhouse.com/docs", "neo4j.com/docs", "www.elastic.co/guide", "duckdb.org",
+  "www.mongodb.com/docs", "clickhouse.com/docs", "neo4j.com/docs", "www.elastic.co/guide", "duckdb.org", "mariadb.com",
   // Standards and specs
-  "www.w3.org", "whatwg.org", "rfc-editor.org", "datatracker.ietf.org", "www.ietf.org",
+  "www.w3.org", "whatwg.org", "rfc-editor.org", "datatracker.ietf.org", "www.ietf.org", "tc39.es",
+  "spec.commonmark.org", "unicode.org", "semver.org", "conventionalcommits.org", "keepachangelog.com",
   // Security reference
   "owasp.org", "cve.org", "nvd.nist.gov",
   // AI provider docs
   "docs.anthropic.com", "platform.openai.com", "ai.google.dev",
   // Unix, Linux, and shells
-  "man7.org", "man.archlinux.org", "wiki.archlinux.org", "tldp.org", "www.debian.org",
+  "man7.org", "man.archlinux.org", "wiki.archlinux.org", "tldp.org", "www.debian.org", "wiki.debian.org",
+  "systemd.io", "www.freedesktop.org", "formulae.brew.sh",
   "docs.brew.sh", "curl.se", "neovim.io/doc", "vimhelp.org", "nixos.org", "www.gnu.org",
   // General reference
-  "en.wikipedia.org",
+  "en.wikipedia.org", "web.archive.org", "archive.org", "news.ycombinator.com", "golang.org",
 ];
 
 function normalizeDomain(raw: string): string {
@@ -100,37 +110,54 @@ function normalizeDomain(raw: string): string {
   return s;
 }
 
-/** Entries: host-only ("docs.rs") or host+path prefix ("vercel.com/docs"). */
-function buildAllowlist(): Map<string, string[]> {
+/** Entries: host-only ("docs.rs"), host+path ("vercel.com/docs"), or wildcard ("*.github.io"). */
+interface Allowlist {
+  /** host -> allowed path prefixes ("" = whole host). */
+  exact: Map<string, string[]>;
+  /** Suffixes from "*.host" entries; any subdomain of these hosts is allowed. */
+  suffixes: string[];
+}
+
+function buildAllowlist(): Allowlist {
   const entries = config.webFetch?.allowedDomains?.length
     ? [...config.webFetch.allowedDomains, ...FETCH_EXTRA_DOMAINS]
     : [...DEFAULT_ALLOWED_DOMAINS, ...FETCH_EXTRA_DOMAINS];
 
-  const map = new Map<string, string[]>();
+  const exact = new Map<string, string[]>();
+  const suffixes = new Set<string>();
   for (const entry of entries) {
-    const normalized = normalizeDomain(entry);
+    const raw = entry.trim();
+    if (!raw) continue;
+    if (raw.startsWith("*.")) {
+      const suffix = normalizeDomain(raw.slice(2));
+      if (suffix) suffixes.add(suffix);
+      continue;
+    }
+    const normalized = normalizeDomain(raw);
     if (!normalized) continue;
     const slash = normalized.indexOf("/");
     const host = slash === -1 ? normalized : normalized.slice(0, slash);
     const prefix = slash === -1 ? "" : normalized.slice(slash).replace(/\/+$/, "");
-    const prefixes = map.get(host) ?? [];
+    const prefixes = exact.get(host) ?? [];
     // A bare host entry subsumes all path prefixes for that host.
     if (prefix === "" || prefixes.includes("")) prefixes.length = 0;
     if (prefix === "" || !prefixes.includes("")) prefixes.push(prefix || "");
-    map.set(host, prefixes);
+    exact.set(host, prefixes);
   }
-  return map;
+  return { exact, suffixes: [...suffixes] };
 }
 
 const ALLOWLIST = buildAllowlist();
 
-function domainAllowed(url: URL): boolean {
+export function domainAllowed(url: URL): boolean {
   const host = normalizeDomain(url.hostname);
-  const prefixes = ALLOWLIST.get(host);
-  if (!prefixes) return false;
-  if (prefixes.includes("")) return true;
-  const path = url.pathname.replace(/\/+$/, "");
-  return prefixes.some((p) => path === p || path.startsWith(`${p}/`));
+  const prefixes = ALLOWLIST.exact.get(host);
+  if (prefixes) {
+    if (prefixes.includes("")) return true;
+    const path = url.pathname.replace(/\/+$/, "");
+    if (prefixes.some((p) => path === p || path.startsWith(`${p}/`))) return true;
+  }
+  return ALLOWLIST.suffixes.some((s) => host.endsWith(`.${s}`));
 }
 
 // ─── Downloads and artifacts ────────────────────────────────────────────────
@@ -221,7 +248,10 @@ async function fetchOne(urlInput: string, ctx: any, signal: AbortSignal | undefi
   const url = await assertPublicHttpUrl(raw);
   if (!domainAllowed(url)) {
     throw new Error(
-      `Domain "${url.hostname}" is not in the web_fetch allowlist. Use web_search for this site instead.`,
+      `Domain "${url.hostname}" is not in the web_fetch allowlist. ` +
+        `Add it with webFetch.extraAllowedDomains in ~/.pi/agent/lystic-tools.yaml, ` +
+        `or with the XAI_FETCH_ALLOWED_DOMAINS environment variable. ` +
+        `You can also use web_search for this site.`,
     );
   }
 

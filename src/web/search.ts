@@ -3,6 +3,8 @@
  *
  * Improvements over v1:
  *  - Retry with backoff on 429 / 5xx / network errors (honors Retry-After).
+ *  - Timeout vs cancel classification; timeouts retry once per credential.
+ *  - Final error carries failure kind, HTTP status, and attempt count.
  *  - Credential circuit breaker: 401/403 trips a 10-minute breaker.
  *  - Inline citations normalized from [[N]](url) to [N](url).
  *  - xAI usage mapped onto pi tool-result usage for /session totals.
@@ -10,7 +12,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { SEARCH_BASE_URL, SEARCH_MODEL, SEARCH_X_SEARCH } from "../config";
+import { SEARCH_BASE_URL, SEARCH_MODEL, SEARCH_TIMEOUT_MS, SEARCH_X_SEARCH } from "../config";
 import { resolveCredentials, tripBreaker, resetBreaker, allBreakersOpen } from "../auth";
 import { abortableSleep } from "../http";
 
@@ -64,13 +66,26 @@ function parseResponse(data: any): { text: string; citations: Citation[]; usage?
   return { text, citations, usage };
 }
 
+type SearchFailure = {
+  ok: false;
+  /** What went wrong: no response (timeout/network), HTTP error, or caller cancel. */
+  kind: "network" | "timeout" | "http" | "cancelled";
+  /** HTTP status, or 0 when no response was received. */
+  status: number;
+  retryable: boolean;
+  retryAfterMs?: number;
+  error: string;
+};
+
+type SearchResult = { ok: true; data: any } | SearchFailure;
+
 async function searchOnce(
   query: string,
   allowedDomains: string[] | undefined,
   excludedDomains: string[] | undefined,
   credential: { key: string; label: string },
   signal: AbortSignal | undefined,
-): Promise<{ ok: true; data: any } | { ok: false; status: number; retryable: boolean; retryAfterMs?: number; error: string }> {
+): Promise<SearchResult> {
   const filters: Record<string, string[]> = {};
   if (allowedDomains?.length) filters.allowed_domains = allowedDomains;
   if (excludedDomains?.length) filters.excluded_domains = excludedDomains;
@@ -92,7 +107,7 @@ async function searchOnce(
     max_output_tokens: 8192,
   };
 
-  const timeout = AbortSignal.timeout(120_000);
+  const timeout = AbortSignal.timeout(SEARCH_TIMEOUT_MS);
   const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
 
   let response: Response;
@@ -104,12 +119,20 @@ async function searchOnce(
       signal: combined,
     });
   } catch (error) {
-    return {
-      ok: false,
-      status: 0,
-      retryable: true,
-      error: `network error: ${(error as Error).message}`,
-    };
+    if (signal?.aborted) {
+      return { ok: false, kind: "cancelled", status: 0, retryable: false, error: "cancelled by caller" };
+    }
+    const err = error as Error;
+    if (timeout.aborted || err?.name === "TimeoutError") {
+      return {
+        ok: false,
+        kind: "timeout",
+        status: 0,
+        retryable: true,
+        error: `no response: request timed out after ${SEARCH_TIMEOUT_MS / 1000}s`,
+      };
+    }
+    return { ok: false, kind: "network", status: 0, retryable: true, error: `network error: ${err?.message ?? String(error)}` };
   }
 
   if (!response.ok) {
@@ -117,7 +140,7 @@ async function searchOnce(
     const retryable = response.status === 429 || response.status >= 500;
     const retryAfterHeader = Number(response.headers.get("retry-after") ?? "");
     const retryAfterMs = Number.isFinite(retryAfterHeader) && retryAfterHeader > 0 ? retryAfterHeader * 1000 : undefined;
-    return { ok: false, status: response.status, retryable, retryAfterMs, error: `HTTP ${response.status}: ${detail}` };
+    return { ok: false, kind: "http", status: response.status, retryable, retryAfterMs, error: `HTTP ${response.status}: ${detail}` };
   }
 
   return { ok: true, data: await response.json() };
@@ -149,7 +172,7 @@ async function runSearch(
         resetBreaker(credential.label);
         const parsed = parseResponse(result.data);
         if (!parsed.text && parsed.citations.length === 0) {
-          lastError = `xAI search returned no content (${credential.label})`;
+          lastError = `xAI search returned no content (${credential.label}, attempt ${attempt})`;
           break; // empty success is not retryable — next credential
         }
         return {
@@ -160,20 +183,33 @@ async function runSearch(
         };
       }
 
-      lastError = `xAI search (${credential.label}) ${result.error}`;
+      const where =
+        `xAI search (${credential.label}, attempt ${attempt}/${MAX_ATTEMPTS_PER_CREDENTIAL}) ` +
+        `${result.kind}${result.status ? ` ${result.status}` : ""}: ${result.error}`;
+      lastError = where;
 
+      // Caller cancelled: stop everything, do not retry.
+      if (result.kind === "cancelled" || signal?.aborted) {
+        throw new Error("web_search cancelled");
+      }
       if (result.status === 401 || result.status === 403) {
         tripBreaker(credential.label);
         break; // switch credential
       }
+      // A timeout means the server is slow: retry once, then give up on this credential.
+      if (result.kind === "timeout" && attempt >= 2) break;
       if (!result.retryable || attempt === MAX_ATTEMPTS_PER_CREDENTIAL) break;
 
       // Backoff: honor Retry-After header, else exponential (1s, 3s).
       const delayMs = result.retryAfterMs ?? (attempt === 1 ? 1000 : 3000);
-      await abortableSleep(delayMs, signal);
+      try {
+        await abortableSleep(delayMs, signal);
+      } catch {
+        throw new Error("web_search cancelled during retry backoff");
+      }
     }
   }
-  throw new Error(lastError);
+  throw new Error(`web_search failed: ${lastError}`);
 }
 
 export function registerWebSearch(pi: ExtensionAPI): void {

@@ -15,6 +15,8 @@ export interface WebSearchConfig {
   baseUrl?: string;
   /** Send the server-side x_search tool alongside web_search. Default true. */
   xSearch?: boolean;
+  /** Seconds before a single search request is aborted. Default 120. */
+  timeoutSecs?: number;
 }
 
 export interface WebFetchConfig {
@@ -95,6 +97,10 @@ export const SEARCH_BASE_URL = (
 
 export const SEARCH_MODEL = config.webSearch?.model ?? process.env.XAI_SEARCH_MODEL ?? "grok-4.6";
 export const SEARCH_X_SEARCH = config.webSearch?.xSearch ?? true;
+
+const searchTimeoutEnv = Number.parseInt(process.env.XAI_SEARCH_TIMEOUT_SECS ?? "", 10);
+export const SEARCH_TIMEOUT_MS =
+  (config.webSearch?.timeoutSecs ?? (Number.isFinite(searchTimeoutEnv) ? searchTimeoutEnv : 120)) * 1000;
 
 export const FETCH_TIMEOUT_MS = (config.webFetch?.timeoutSecs ?? 60) * 1000;
 export const FETCH_MAX_BYTES = config.webFetch?.maxBytes ?? 10 * 1024 * 1024;

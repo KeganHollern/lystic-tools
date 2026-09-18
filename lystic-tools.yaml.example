@@ -4,8 +4,11 @@
 webSearch:
   model: grok-4.6
   xSearch: true
+  timeoutSecs: 120 # seconds before one search request times out (retried once per credential)
 
 webFetch:
+  # Entries are hosts ("api.github.com"), host+path ("vercel.com/docs"),
+  # or wildcards ("*.github.io"). Appended to the built-in allowlist.
   extraAllowedDomains: []
 
 subagents:

@@ -10,9 +10,13 @@ Use this command to install from GitHub:
 pi install git:github.com/KeganHollern/lystic-tools
 ```
 
-Use this command to install from a local clone:
+Use this command to install from a local clone.
+A local path install does not install npm dependencies.
+Run `npm install` in the clone first:
 
 ```bash
+cd /absolute/path/to/lystic-tools
+npm install
 pi install /absolute/path/to/lystic-tools
 ```
 
