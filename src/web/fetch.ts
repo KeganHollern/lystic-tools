@@ -22,6 +22,8 @@ import {
 } from "../config";
 import { fetchWithChecks } from "../http";
 import { htmlToMarkdown } from "../markdown";
+import { selectEvidence } from "../jev/evidence";
+import { goalIdForSession, isActive, loadGoal } from "../goal/state";
 
 // ─── Domain allowlist (copied from grok-build web_fetch/config.rs) ──────────
 
@@ -326,6 +328,11 @@ async function pooled<T, R>(
 // ─── Tool ────────────────────────────────────────────────────────────────────
 
 export function registerWebFetch(pi: ExtensionAPI): void {
+  let recentInput = "";
+  pi.on("session_start", () => { recentInput = ""; });
+  pi.on("input", (event) => {
+    if (event.source !== "extension") recentInput = event.text.slice(0, 2_000);
+  });
   pi.registerTool({
     name: "web_fetch",
     label: "Web Fetch",
@@ -347,6 +354,7 @@ export function registerWebFetch(pi: ExtensionAPI): void {
           description: "Multiple URLs to fetch (max 5). Runs up to three at a time.",
         }),
       ),
+      focus: Type.Optional(Type.String({ description: "Question for optional Jev excerpts. The current goal and latest user message supply the default." })),
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const list =
@@ -359,6 +367,30 @@ export function registerWebFetch(pi: ExtensionAPI): void {
       }
 
       const outcomes = await pooled(list, 3, (u) => fetchOne(u, ctx, signal));
+      const goalId = goalIdForSession(ctx?.sessionManager?.getSessionFile?.());
+      const goal = goalId ? loadGoal(goalId) : undefined;
+      const objective = goal && isActive(goal) ? goal.objective : undefined;
+      const focus = params.focus ?? [objective, recentInput].filter(Boolean).join("\n");
+      // The URL cache always holds the normal output. Selection belongs to this call.
+      for (let i = 0; i < outcomes.length; i++) {
+        const outcome = outcomes[i];
+        if (outcome.status !== "fulfilled") continue;
+        const original = outcome.value.text;
+        const selected = await selectEvidence(original, focus, {
+          signal,
+          source: list[i],
+          saveOriginal: (text) => saveDownload(
+            ctx,
+            `${list[i]}:${createHash("sha256").update(text).digest("hex")}`,
+            "text/markdown",
+            new TextEncoder().encode(text),
+            ".md",
+          ),
+        });
+        if (selected !== original) {
+          outcome.value = { text: selected, details: { ...outcome.value.details, jevExcerpt: true } };
+        }
+      }
 
       // Single URL: success returns text, failure throws (existing behavior).
       if (outcomes.length === 1) {

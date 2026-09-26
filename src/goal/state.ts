@@ -48,6 +48,12 @@ export interface GoalState {
   summaryId?: string;
   gaps: string[];
   notes: GoalNote[];
+  /** Optional Jev bookkeeping. Old state files need no migration. */
+  jevCompletionCheckedRound?: number;
+  jevCompletionCorrectedPanel?: number;
+  jevCompletionPending?: boolean;
+  jevStuckCheckedRound?: number;
+  jevLastIdeaRound?: number;
 }
 
 export function goalsRoot(): string {

@@ -387,7 +387,7 @@ class TasksOverlay {
         this.invalidate();
         return;
       }
-      if (matchesKey(data, "G") || matchesKey(data, Key.end)) {
+      if (matchesKey(data, Key.shift("g")) || matchesKey(data, Key.end)) {
         this.logOffset = 99999;
         this.logFollowEnd = true;
         this.invalidate();

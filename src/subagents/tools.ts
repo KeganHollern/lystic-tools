@@ -20,6 +20,9 @@ import {
 } from "../config";
 import type { SubagentRegistry } from "./registry";
 import { existsSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { selectEvidence } from "../jev/evidence";
 import {
   spawnBackground,
   writeInbox,
@@ -170,6 +173,7 @@ export function registerTaskTools({ registry, pi }: TaskToolsDeps): void {
       subagent_id: Type.Optional(Type.String({ description: "One subagent id." })),
       wait: Type.Optional(Type.Boolean({ description: "Wait for completion. Default true." })),
       timeout_sec: Type.Optional(Type.Number({ description: "Max wait in seconds. Default 120." })),
+      focus: Type.Optional(Type.String({ description: "Question for optional Jev excerpts. The original child task supplies the default." })),
     }),
     async execute(_toolCallId, params, signal) {
       const wait = params.wait ?? true;
@@ -196,15 +200,29 @@ export function registerTaskTools({ registry, pi }: TaskToolsDeps): void {
         }
       }
 
-      const sections = targets.map((record) => {
+      const sections = [];
+      for (const record of targets) {
         const header = `${statusIcon(record)} ${record.id} (${record.type}) ${record.status} — ${record.description}`;
         const usage = formatUsageLine(record, registry.readTree());
-        const output = record.status === "running"
+        let output = record.status === "running"
           ? "(still running)"
           : record.output.slice(0, SUBAGENTS_OUTPUT_CAP) +
             (record.output.length > SUBAGENTS_OUTPUT_CAP ? "\n[truncated]" : "");
-        return `### ${header}\n${usage}\n\n${output}`;
-      });
+        if (record.status !== "running") {
+          const selected = await selectEvidence(record.output, params.focus ?? record.prompt, {
+            signal,
+            source: `${record.id}: ${record.description}`,
+            saveOriginal: async (text) => {
+              const hash = createHash("sha256").update(text).digest("hex").slice(0, 16);
+              const artifact = `${record.transcriptPath}.${hash}.output.txt`;
+              await writeFile(artifact, text, { encoding: "utf8", mode: 0o600 });
+              return artifact;
+            },
+          });
+          if (selected !== record.output) output = selected;
+        }
+        sections.push(`### ${header}\n${usage}\n\n${output}`);
+      }
 
       return {
         content: [{ type: "text", text: sections.join("\n\n---\n\n") }],
@@ -225,7 +243,7 @@ export function registerTaskTools({ registry, pi }: TaskToolsDeps): void {
       const mine = process.env.LYSTIC_SUBAGENT_ID ?? "";
       const rows = registry.readTree().filter((r) => (r.parentId ?? "") === mine);
       if (rows.length === 0) {
-        return { content: [{ type: "text", text: "No immediate subagents." }] };
+        return { content: [{ type: "text", text: "No immediate subagents." }], details: { count: 0, ids: [] } };
       }
       const lines = rows.map((r) => {
         const cost = rolledCost(r, registry.readTree());

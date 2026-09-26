@@ -23,3 +23,19 @@ goal:
   skeptics: 2          # skeptics per verification panel
   ideaGuyAfter: 3      # failed verifications between idea-guy runs
   blockedPauseAfter: 12 # blocked reports before pause; idea guy fires every 3
+
+# Jev is optional. Without a key, the normal agent behavior continues.
+jev:
+  enabled: auto         # false disables all Jev requests.
+  apiKeyEnv: TYPESAFE_API_KEY # Set the variable name here, never the key.
+  mode: active          # shadow records decisions without applying them; off makes no calls.
+  model: jev-1.13.0
+  timeoutMs: 1500
+  maxCallsPerGoal: 30
+  maxCallsPerSession: 100
+  maxInputChars: 24000
+  features:
+    completionCheck: true
+    stuckDetection: true
+    evidenceSelection: true
+    wakeTriage: true

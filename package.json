@@ -2,15 +2,23 @@
   "name": "lystic-tools",
   "version": "0.1.0",
   "description": "Web search, fetch, and subagents for the pi coding agent",
-  "keywords": ["pi-package"],
+  "keywords": [
+    "pi-package"
+  ],
   "license": "MIT",
   "type": "module",
+  "scripts": {
+    "test": "node --import tsx --test --test-isolation=none tests/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/KeganHollern/lystic-tools.git"
   },
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "./src/index.ts"
+    ]
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
@@ -23,5 +31,11 @@
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "@types/turndown": "^5.0.6",
+    "tsx": "^4.23.13",
+    "typescript": "^6.0.3"
   }
 }

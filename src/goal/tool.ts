@@ -37,27 +37,28 @@ export function registerGoalTool(pi: ExtensionAPI, deps: GoalToolDeps): void {
     async execute(_toolCallId, params) {
       const goal = deps.getGoal();
       if (!goal) {
-        return { content: [{ type: "text", text: "No active goal. Only the user starts goals with /goal." }] };
+        return { details: {}, content: [{ type: "text", text: "No active goal. Only the user starts goals with /goal." }] };
       }
       if (goal.status === "verifying") {
-        return { content: [{ type: "text", text: "The skeptic panel is running. Wait for its verdict; it arrives as the next round reminder." }] };
+        return { details: {}, content: [{ type: "text", text: "The skeptic panel is running. Wait for its verdict; it arrives as the next round reminder." }] };
       }
       if (goal.status === "paused") {
-        return { content: [{ type: "text", text: `The goal is paused (${goal.pauseReason ?? "user"}). The user must run /goal resume.` }] };
+        return { details: {}, content: [{ type: "text", text: `The goal is paused (${goal.pauseReason ?? "user"}). The user must run /goal resume.` }] };
       }
       if (goal.status !== "executing") {
-        return { content: [{ type: "text", text: "The plan is still being drafted. Keep working or wait for the kickoff round." }] };
+        return { details: {}, content: [{ type: "text", text: "The plan is still being drafted. Keep working or wait for the kickoff round." }] };
       }
 
       if (params.completed) {
-        if (goal.pendingCompletion || goal.status === "verifying") {
-          return { content: [{ type: "text", text: "Verification is already pending or running. Keep working or wait." }] };
+        if (goal.pendingCompletion) {
+          return { details: {}, content: [{ type: "text", text: "Verification is already pending or running. Keep working or wait." }] };
         }
         goal.pendingCompletion = true;
         goal.completedMessage = params.message ?? "(no message)";
         goal.consecutiveBlocked = 0;
         deps.save(goal);
         return {
+          details: {},
           content: [{ type: "text", text: "Completion claim recorded. The skeptic panel runs when this turn settles." }],
         };
       }
@@ -72,12 +73,14 @@ export function registerGoalTool(pi: ExtensionAPI, deps: GoalToolDeps): void {
           deps.save(goal);
           deps.onPaused(goal);
           return {
+            details: {},
             content: [{ type: "text", text: `Goal paused after ${goal.consecutiveBlocked} blocked reports. The user can run /goal resume.` }],
           };
         }
         if (goal.consecutiveBlocked % GOAL_BLOCKED_IDEA_EVERY === 0) {
           deps.onIdeaNeeded(goal);
           return {
+            details: {},
             content: [{
               type: "text",
               text: `Blocked report ${goal.consecutiveBlocked}/${GOAL_BLOCKED_PAUSE}. The idea guy is fetching ways to unblock; they arrive with the next round.`,
@@ -86,6 +89,7 @@ export function registerGoalTool(pi: ExtensionAPI, deps: GoalToolDeps): void {
         }
         deps.save(goal);
         return {
+          details: {},
           content: [{ type: "text", text: `Blocked report ${goal.consecutiveBlocked}/${GOAL_BLOCKED_PAUSE}. Try a different approach.` }],
         };
       }
@@ -95,10 +99,10 @@ export function registerGoalTool(pi: ExtensionAPI, deps: GoalToolDeps): void {
         if (goal.notes.length > 20) goal.notes.splice(0, goal.notes.length - 20);
         goal.consecutiveBlocked = 0;
         deps.save(goal);
-        return { content: [{ type: "text", text: "Noted." }] };
+        return { details: {}, content: [{ type: "text", text: "Noted." }] };
       }
 
-      return { content: [{ type: "text", text: "Nothing to do. Use completed, message, or blocked_reason." }] };
+      return { details: {}, content: [{ type: "text", text: "Nothing to do. Use completed, message, or blocked_reason." }] };
     },
   });
 }

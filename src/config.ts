@@ -60,6 +60,50 @@ export interface LysticToolsConfig {
   webFetch?: WebFetchConfig;
   subagents?: SubagentsConfig;
   goal?: GoalConfig;
+  jev?: JevConfig;
+}
+
+export type JevFeature = "completionCheck" | "stuckDetection" | "evidenceSelection" | "wakeTriage";
+
+export interface JevConfig {
+  enabled?: boolean | "auto";
+  mode?: "off" | "shadow" | "active";
+  /** Name of the environment variable, never the key itself. */
+  apiKeyEnv?: string;
+  model?: string;
+  timeoutMs?: number;
+  maxCallsPerGoal?: number;
+  maxCallsPerSession?: number;
+  maxInputChars?: number;
+  features?: Partial<Record<JevFeature, boolean>>;
+}
+
+function boundedInteger(value: unknown, fallback: number, min: number, max: number): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(min, Math.min(max, Math.floor(value)))
+    : fallback;
+}
+
+/** Invalid values use conservative defaults; zero request limits disable requests. */
+export function resolveJevConfig(value: JevConfig = {}) {
+  return {
+    enabled: value.enabled === false ? false : value.enabled === true ? true : "auto" as const,
+    mode: value.mode === "off" || value.mode === "shadow" ? value.mode : "active" as const,
+    apiKeyEnv: typeof value.apiKeyEnv === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(value.apiKeyEnv)
+      ? value.apiKeyEnv : "TYPESAFE_API_KEY",
+    model: typeof value.model === "string" && /^jev-[a-zA-Z0-9.-]+$/.test(value.model)
+      ? value.model : "jev-1.13.0",
+    timeoutMs: boundedInteger(value.timeoutMs, 1500, 100, 10_000),
+    maxCallsPerGoal: boundedInteger(value.maxCallsPerGoal, 30, 0, 10_000),
+    maxCallsPerSession: boundedInteger(value.maxCallsPerSession, 100, 0, 100_000),
+    maxInputChars: boundedInteger(value.maxInputChars, 24_000, 2000, 48_000),
+    features: {
+      completionCheck: value.features?.completionCheck !== false,
+      stuckDetection: value.features?.stuckDetection !== false,
+      evidenceSelection: value.features?.evidenceSelection !== false,
+      wakeTriage: value.features?.wakeTriage !== false,
+    },
+  };
 }
 
 function agentDir(): string {
@@ -86,6 +130,7 @@ function loadConfigFile(): LysticToolsConfig {
 }
 
 export const config: LysticToolsConfig = loadConfigFile();
+export const JEV_CONFIG = resolveJevConfig(config.jev ?? {});
 
 // ─── Resolved values (config > env > default) ───────────────────────────────
 

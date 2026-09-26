@@ -22,6 +22,8 @@ import { createGoalControl, goalNotify, registerGoalFeature } from "../goal/loop
 import { registerGoalCommand } from "../goal/command";
 import { isGoalRoleType } from "../goal/state";
 import * as fs from "node:fs";
+import { jev } from "../jev/index";
+import { WakeDispatcher } from "./wake";
 
 export function registerSubagents(pi: ExtensionAPI): void {
   if (!SUBAGENTS_ENABLED) return;
@@ -30,6 +32,17 @@ export function registerSubagents(pi: ExtensionAPI): void {
   let ui: ExtensionContext["ui"] | undefined;
   let footerTimer: ReturnType<typeof setInterval> | undefined;
   let inboxTimer: ReturnType<typeof setInterval> | undefined;
+  let context: ExtensionContext | undefined;
+  const wake = new WakeDispatcher({
+    client: jev,
+    isIdle: () => context?.isIdle() ?? true,
+    hasOtherBusy: (id) => registry?.readTree().some((r) => r.id !== id && (r.status === "running" || r.status === "waiting")) ?? false,
+    isCurrent: (snapshot) => {
+      const record = registry?.get(snapshot.id);
+      return record?.startedAt === snapshot.startedAt && record?.endedAt === snapshot.endedAt && record?.status === snapshot.status;
+    },
+    send: (record, triggerTurn) => sendWake(pi, record, registry!, triggerTurn),
+  });
 
   const ensureRegistry = (sessionFile: string | undefined): SubagentRegistry => {
     if (registry) return registry;
@@ -41,7 +54,7 @@ export function registerSubagents(pi: ExtensionAPI): void {
       updateStatus(ui, registry!);
       goalNotify(record, info);
       if (info.fromRunning) {
-        maybeWake(pi, record, registry!);
+        maybeWake(wake, record, registry!);
         registry!.markSelfRunningIfIdle();
       }
     });
@@ -49,6 +62,8 @@ export function registerSubagents(pi: ExtensionAPI): void {
   };
 
   pi.on("session_start", (_event, ctx) => {
+    wake.reset();
+    context = ctx;
     ui = ctx.ui;
     const next = ensureRegistry(ctx.sessionManager.getSessionFile() ?? undefined);
     next.setTranscriptsDir(transcriptsDirFor(ctx.sessionManager.getSessionFile() ?? undefined));
@@ -95,6 +110,8 @@ export function registerSubagents(pi: ExtensionAPI): void {
   });
 
   pi.on("session_shutdown", () => {
+    wake.reset();
+    context = undefined;
     if (footerTimer) {
       clearInterval(footerTimer);
       footerTimer = undefined;
@@ -111,6 +128,10 @@ export function registerSubagents(pi: ExtensionAPI): void {
       }
     }
   });
+
+  pi.on("session_before_switch", () => wake.reset());
+  pi.on("session_before_fork", () => wake.reset());
+  pi.on("session_tree", () => wake.reset());
 
   // Tools and /tasks. Tools skip themselves at maxDepth; /tasks stays useful
   // at depth 0 only (children have no parent-facing overlay).
@@ -145,16 +166,20 @@ function updateStatus(ui: ExtensionContext["ui"] | undefined, registry: Subagent
   ui.setStatus("subagents", text || undefined);
 }
 
-function maybeWake(pi: ExtensionAPI, record: ChildRecord, registry: SubagentRegistry): void {
+function maybeWake(wake: WakeDispatcher, record: ChildRecord, registry: SubagentRegistry): void {
   if (!record.background) return;
   // Goal roles never wake the worker; the goal loop owns all timing.
   if (isGoalRoleType(record.type)) return;
-  if (record.status === "running") return;
+  if (record.status === "running" || record.status === "waiting") return;
   if (registry.isWoken(record.id)) return;
   registry.markWoken(record.id);
 
   if (!SUBAGENTS_AUTO_WAKE) return;
 
+  wake.notify(record);
+}
+
+function sendWake(pi: ExtensionAPI, record: ChildRecord, registry: SubagentRegistry, triggerTurn: boolean): void {
   pi.sendMessage(
     {
       customType: "subagent_completed",
@@ -169,7 +194,6 @@ function maybeWake(pi: ExtensionAPI, record: ChildRecord, registry: SubagentRegi
         cost: rolledCost(record, registry.readTree()),
       },
     },
-    { triggerTurn: true, deliverAs: "steer" },
+    { triggerTurn, deliverAs: "steer" },
   );
 }
-
