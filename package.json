@@ -5,6 +5,10 @@
   "keywords": [
     "pi-package"
   ],
+  "files": [
+    "src",
+    "lystic-tools.yaml.example"
+  ],
   "license": "MIT",
   "type": "module",
   "scripts": {

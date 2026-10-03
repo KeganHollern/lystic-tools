@@ -4,6 +4,14 @@ This package adds web search, page fetch, subagents, autonomous goals, and optio
 
 ## Install
 
+Use this command to install from npm:
+
+```bash
+pi install npm:lystic-tools
+```
+
+The package is listed in the [Pi package gallery](https://pi.dev/packages).
+
 Use this command to install from GitHub:
 
 ```bash
